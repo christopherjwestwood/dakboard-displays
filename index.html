@@ -360,7 +360,7 @@ function App(Core) {
   }
   function hookAddr() { return cfg.hookUrl === 'off' ? '' : cfg.hookUrl; }
 
-  var banner = null, audioCtx = null, wakeLock = null;
+  var banner = null, bannerLoud = false, audioCtx = null, wakeLock = null;
   var ringTimer = null;
   var lastPush = 0, linkOk = null, pushOk = null, polling = false;
 
@@ -434,8 +434,8 @@ function App(Core) {
   }
   /* keep sounding every 5 s while an alert banner is showing; stops on Dismiss, any button, or a change from another device */
   function syncRing() {
-    var want = !!banner && !DISPLAY && cfg.sound;
-    if (want && !ringTimer) ringTimer = setInterval(function () { if (banner) beep(); else syncRing(); }, 5000);
+    var want = !!banner && bannerLoud && !DISPLAY && cfg.sound;
+    if (want && !ringTimer) ringTimer = setInterval(function () { if (banner && bannerLoud) beep(); else syncRing(); }, 5000);
     else if (!want && ringTimer) { clearInterval(ringTimer); ringTimer = null; }
   }
   function notify(msg) {
@@ -455,7 +455,9 @@ function App(Core) {
     } else {
       msg = 'Break done: you can sit down now.';
     }
-    banner = msg; beep(); notify(msg);
+    banner = msg; bannerLoud = (kind === 'sit');
+    if (bannerLoud) beep();
+    notify(msg);
   }
 
   /* wake lock */
@@ -484,6 +486,7 @@ function App(Core) {
   $('callend').onclick = function () {
     act(function (now) {
       var r = Core.endCallAction(s, now, cfg);
+      bannerLoud = false;
       banner = r.switched ? 'Call ended: ' + dur(r.over) + ' over your sitting limit. Take a standing break of ' + fmt(r.target) + '.' : null;
     });
   };
