@@ -79,7 +79,7 @@
   .wide { display: grid; gap: 6px; margin-top: 16px; }
   .wide label { font-size: 0.875rem; }
   .wide input { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); font: inherit; }
-  body.display .buttons, body.display #settingsCard, body.display #today, body.display #summary,
+  body.display .buttons, body.display .awaywrap, body.display #settingsCard, body.display #today, body.display #summary,
   body.display h1, body.display #daynote { display: none; }
   body.display { padding: 8px; background: transparent; }
   body.display { --text: #fff; --muted: rgba(255,255,255,0.8); }
@@ -101,6 +101,10 @@
   .settings input[type=number] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); font: inherit; }
   .checks { margin-top: 14px; display: grid; gap: 8px; }
   .small { color: var(--muted); font-size: 0.8125rem; margin-top: 12px; }
+  .awaywrap { margin: 0 0 16px; display: grid; gap: 6px; }
+  .awaywrap label { color: var(--muted); font-size: 0.8125rem; }
+  .awaywrap input { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: inherit; }
+  body.display .awaywrap { display: none; }
   .linkbtn { background: none; border: 0; color: var(--muted); text-decoration: underline; cursor: pointer; font: inherit; font-size: 0.8125rem; padding: 0; margin-top: 12px; }
 </style>
 </head>
@@ -123,10 +127,16 @@
     <button id="sit" type="button">Sit</button>
     <button id="stand" type="button">Stand</button>
     <button id="walk" type="button">Walk outside</button>
+    <button id="run" type="button">Run</button>
+    <button id="away" type="button">Away</button>
     <button id="back" type="button">Back from walk</button>
     <button id="call" type="button">On a call</button>
     <button id="callend" type="button">Call ended</button>
     <button id="end" type="button" style="grid-column: 1 / -1;">End day</button>
+  </div>
+  <div class="awaywrap" id="awaywrap">
+    <label for="awaynote">Going away? Type what for (optional), then press Away</label>
+    <input id="awaynote" type="text" maxlength="40" placeholder="e.g. dinner, errand" autocomplete="off">
   </div>
 
   <section class="card" id="today">
@@ -135,6 +145,8 @@
       <div class="stat"><div class="v" id="s-sit">0 min</div><div class="k">Sitting</div></div>
       <div class="stat"><div class="v" id="s-stand">0 min</div><div class="k">Standing</div></div>
       <div class="stat"><div class="v" id="s-walk">0 min</div><div class="k">Walking</div></div>
+      <div class="stat"><div class="v" id="s-run">0 min</div><div class="k">Running</div></div>
+      <div class="stat"><div class="v" id="s-away">0 min</div><div class="k">Away</div></div>
       <div class="stat"><div class="v" id="s-breaks">0</div><div class="k">Breaks</div></div>
       <div class="stat"><div class="v" id="s-longest">0 min</div><div class="k">Longest sit</div></div>
       <div class="stat"><div class="v" id="s-over">0 min</div><div class="k">Over the limit</div></div>
@@ -184,8 +196,18 @@ var Core = (function () {
   function blank() {
     return {
       phase: 'off', mode: 'idle', modeStart: 0, dayStart: 0, dayEnd: 0, standTarget: 0, alertCount: 0, onCall: false, callStart: 0, callTime: 0, calls: 0, v: 0, w: '', t: 0,
-      totals: { sit: 0, stand: 0, walk: 0 }, breaks: 0, cutShort: 0, longestSit: 0, overrun: 0, log: []
+      totals: { sit: 0, stand: 0, walk: 0, run: 0, away: 0 }, runs: 0, awayNote: '', awayList: [], breaks: 0, cutShort: 0, longestSit: 0, overrun: 0, log: []
     };
+  }
+
+  /* make sure a state from an older version (or another device) has every field */
+  function norm(r) {
+    var b = blank(), o = Object.assign(b, r);
+    o.totals = Object.assign({ sit: 0, stand: 0, walk: 0, run: 0, away: 0 }, (r && r.totals) || {});
+    if (!Array.isArray(o.awayList)) o.awayList = [];
+    if (!Array.isArray(o.log)) o.log = [];
+    o.runs = o.runs || 0; o.awayNote = o.awayNote || '';
+    return o;
   }
 
   function startDay(now) {
@@ -208,6 +230,12 @@ var Core = (function () {
       if (next === 'sitting' && d < s.standTarget) s.cutShort++;
     } else if (s.mode === 'walking') {
       s.totals.walk += d; s.breaks++;
+    } else if (s.mode === 'running') {
+      s.totals.run += d; s.breaks++; s.runs++;
+    } else if (s.mode === 'away') {
+      s.totals.away += d;
+      if (d > 0) { s.awayList.push({ note: s.awayNote || '', ms: d }); if (s.awayList.length > 30) s.awayList.shift(); }
+      s.awayNote = '';
     }
     if (d > 0 && s.mode !== 'idle') s.log.push({ mode: s.mode, start: s.modeStart, end: now });
     return d;
@@ -238,6 +266,14 @@ var Core = (function () {
     if (next === 'standing') s.standTarget = standTargetFor(prev, d, cfg);
     s.mode = next; s.modeStart = now; s.alertCount = 0;
     return s;
+  }
+
+  /* going away: pauses the sit timer. The note is a short description such as "dinner". */
+  function goAway(s, note, now, cfg) {
+    if (s.phase !== 'active' || (s.mode !== 'sitting' && s.mode !== 'standing' && s.mode !== 'idle')) return false;
+    setMode(s, 'away', now, cfg);
+    s.awayNote = String(note || '').trim().slice(0, 40);
+    return true;
   }
 
   function endCallAction(s, now, cfg) {
@@ -274,7 +310,7 @@ var Core = (function () {
   }
 
   function live(s, now, cfg) {
-    var r = { sit: s.totals.sit, stand: s.totals.stand, walk: s.totals.walk, breaks: s.breaks,
+    var r = { sit: s.totals.sit, stand: s.totals.stand, walk: s.totals.walk, run: s.totals.run || 0, away: s.totals.away || 0, runs: s.runs || 0, breaks: s.breaks,
               longestSit: s.longestSit, overrun: s.overrun, cutShort: s.cutShort, calls: s.calls, callTime: s.callTime };
     if (s.phase === 'active') {
       var d = segDur(s, now);
@@ -286,6 +322,8 @@ var Core = (function () {
         if (o > 0) r.overrun += o;
       } else if (s.mode === 'standing') { r.stand += d; }
       else if (s.mode === 'walking') { r.walk += d; }
+      else if (s.mode === 'running') { r.run += d; }
+      else if (s.mode === 'away') { r.away += d; }
     }
     return r;
   }
@@ -307,7 +345,7 @@ var Core = (function () {
     return false;
   }
 
-  return { toRecord: toRecord, shouldAdopt: shouldAdopt, DEFAULTS: DEFAULTS, MIN: MIN, blank: blank, startDay: startDay, setMode: setMode, endDay: endDay, startCall: startCall, endCallAction: endCallAction,
+  return { norm: norm, goAway: goAway, toRecord: toRecord, shouldAdopt: shouldAdopt, DEFAULTS: DEFAULTS, MIN: MIN, blank: blank, startDay: startDay, setMode: setMode, endDay: endDay, startCall: startCall, endCallAction: endCallAction,
            checkAlert: checkAlert, live: live, segDur: segDur, standTargetFor: standTargetFor };
 })();
 
@@ -323,7 +361,7 @@ function App(Core) {
   /* a blank address falls back to the default; type "off" to keep a page local only */
   ['stateUrl', 'hookUrl'].forEach(function (k) { if (!cfg[k]) cfg[k] = Core.DEFAULTS[k]; });
   var s = load(KEY, null);
-  if (!s || !s.totals || !s.phase) s = Core.blank(); else s = Object.assign(Core.blank(), s);
+  if (!s || !s.totals || !s.phase) s = Core.blank(); else s = Core.norm(s);
 
   var params = new URLSearchParams(location.search);
   var DISPLAY = params.get('view') === 'display';
@@ -378,7 +416,7 @@ function App(Core) {
   function applyRemote(rem) {
     if (Core.shouldAdopt(s, rem, ME, DISPLAY)) {
       var changed = rem.mode !== s.mode || rem.modeStart !== s.modeStart;
-      s = Object.assign(Core.blank(), rem);
+      s = Core.norm(rem);
       if (changed) banner = null;
       persist(); syncWake(); render();
     } else if (!DISPLAY && rem && typeof rem.v === 'number' && (s.v || 0) > rem.v && Date.now() - lastPush > 8000) {
@@ -481,7 +519,20 @@ function App(Core) {
   $('sit').onclick = function () { act(function (now) { Core.setMode(s, 'sitting', now, cfg); banner = null; }); };
   $('stand').onclick = function () { act(function (now) { Core.setMode(s, 'standing', now, cfg); banner = null; }); };
   $('walk').onclick = function () { act(function (now) { Core.setMode(s, 'walking', now, cfg); banner = null; }); };
-  $('back').onclick = function () { act(function (now) { Core.setMode(s, 'idle', now, cfg); banner = null; }); };
+  $('run').onclick = function () { act(function (now) { Core.setMode(s, 'running', now, cfg); banner = null; }); };
+  $('away').onclick = function () {
+    var note = $('awaynote').value;
+    act(function (now) { Core.goAway(s, note, now, cfg); banner = null; });
+  };
+  $('awaynote').onkeydown = function (ev) { if (ev.key === 'Enter' && !$('away').disabled) $('away').onclick(); };
+  /* typing or changing the note while away updates it on every device */
+  $('awaynote').onchange = function () {
+    if (s.phase === 'active' && s.mode === 'away') {
+      var v = $('awaynote').value.trim().slice(0, 40);
+      act(function () { s.awayNote = v; });
+    }
+  };
+  $('back').onclick = function () { act(function (now) { Core.setMode(s, 'idle', now, cfg); banner = null; $('awaynote').value = ''; }); };
   $('call').onclick = function () { act(function (now) { Core.startCall(s, now); banner = null; }); };
   $('callend').onclick = function () {
     act(function (now) {
@@ -495,7 +546,7 @@ function App(Core) {
     act(function (now) {
       Core.endDay(s, now, cfg); banner = null;
       var h = load(KEYH, []);
-      h.push({ date: new Date(s.dayStart).toISOString().slice(0, 10), dayStart: s.dayStart, dayEnd: s.dayEnd, totals: s.totals,
+      h.push({ date: new Date(s.dayStart).toISOString().slice(0, 10), dayStart: s.dayStart, dayEnd: s.dayEnd, totals: s.totals, runs: s.runs, away: s.awayList,
                breaks: s.breaks, longestSit: s.longestSit, overrun: s.overrun, cutShort: s.cutShort, calls: s.calls, callTime: s.callTime });
       save(KEYH, h.slice(-60));
     });
@@ -580,6 +631,15 @@ function App(Core) {
         label = 'Walking'; tone = 'walk'; bigText = fmt(e); bigLabel = 'out walking';
         subText = e >= wm ? 'Full break reached. Press Back from walk when you return.' : 'Counts as a full break in ' + fmt(wm - e) + '.';
         title = 'Walking ' + fmt(e);
+      } else if (s.mode === 'running') {
+        var rm = cfg.walkMin * MIN;
+        label = 'Running'; tone = 'walk'; bigText = fmt(e); bigLabel = 'out running';
+        subText = e >= rm ? 'Full break reached. Press Back from run when you return.' : 'Counts as a full break in ' + fmt(rm - e) + '.';
+        title = 'Running ' + fmt(e);
+      } else if (s.mode === 'away') {
+        label = s.awayNote ? 'Away: ' + s.awayNote : 'Away'; tone = 'idle'; bigText = fmt(e); bigLabel = 'away so far (timers paused)';
+        subText = 'Press I\u2019m back when you return, then Sit.';
+        title = 'Away ' + fmt(e);
       }
     }
 
@@ -601,10 +661,17 @@ function App(Core) {
     document.title = title + (title === 'Sit-Stand Timer' ? '' : ' \u00b7 Sit-Stand');
 
     $('start').disabled = active;
-    $('sit').disabled = !active || s.mode === 'sitting';
+    var outMode = s.mode === 'walking' || s.mode === 'running' || s.mode === 'away';
+    $('sit').disabled = !active || s.mode === 'sitting' || s.mode === 'away';
     $('stand').disabled = !active || (s.mode !== 'sitting' && s.mode !== 'idle');
-    $('walk').disabled = !active || s.mode === 'walking';
-    $('back').disabled = !active || s.mode !== 'walking';
+    $('walk').disabled = !active || outMode;
+    $('run').disabled = !active || outMode;
+    $('away').disabled = !active || !(s.mode === 'sitting' || s.mode === 'standing' || s.mode === 'idle');
+    $('back').disabled = !active || !outMode;
+    $('back').textContent = s.mode === 'running' ? 'Back from run' : s.mode === 'away' ? 'I\u2019m back' : 'Back from walk';
+    var an = $('awaynote');
+    if (document.activeElement !== an) { if (s.mode === 'away') an.value = s.awayNote || ''; }
+    an.disabled = !active || outMode && s.mode !== 'away';
     $('call').disabled = !active || s.mode !== 'sitting' || !!s.onCall;
     $('callend').disabled = !active || !s.onCall;
     $('end').disabled = !active;
@@ -625,7 +692,9 @@ function App(Core) {
 
     var t = Core.live(s, now, cfg);
     $('s-sit').textContent = dur(t.sit); $('s-stand').textContent = dur(t.stand); $('s-walk').textContent = dur(t.walk);
-    $('s-breaks').textContent = t.breaks + (s.phase === 'active' && (s.mode === 'standing' || s.mode === 'walking') ? ' (+1 now)' : '');
+    $('s-run').textContent = dur(t.run) + (t.runs ? ' (' + t.runs + (t.runs === 1 ? ' run)' : ' runs)') : '');
+    $('s-away').textContent = dur(t.away);
+    $('s-breaks').textContent = t.breaks + (s.phase === 'active' && (s.mode === 'standing' || s.mode === 'walking' || s.mode === 'running') ? ' (+1 now)' : '');
     $('s-longest').textContent = dur(t.longestSit); $('s-over').textContent = dur(t.overrun);
     $('s-calls').textContent = t.calls + (t.calls ? ' (' + dur(t.callTime) + ')' : '');
 
@@ -636,12 +705,21 @@ function App(Core) {
       $('summarylist').innerHTML =
         '<li>Day length: ' + dur(span) + ' (' + clock(s.dayStart) + ' to ' + clock(s.dayEnd) + ')</li>' +
         '<li>Sitting: ' + dur(t.sit) + ', standing: ' + dur(t.stand) + ', walking: ' + dur(t.walk) + '</li>' +
+        '<li>Running: ' + dur(t.run) + ' (' + t.runs + (t.runs === 1 ? ' run' : ' runs') + ')</li>' +
+        '<li>Away: ' + dur(t.away) + awayText() + '</li>' +
         '<li>Breaks taken: ' + t.breaks + ' (' + t.cutShort + ' cut short)</li>' +
         '<li>Longest unbroken sit: ' + dur(t.longestSit) + '</li>' +
         '<li>Total time over the sitting limit: ' + dur(t.overrun) + '</li>' +
         '<li>Calls using the override: ' + t.calls + (t.calls ? ' (' + dur(t.callTime) + ' on calls)' : '') + '</li>';
     } else { sm.className = 'card'; }
   }
+
+  function awayText() {
+    var l = s.awayList || [];
+    if (!l.length) return '';
+    return ' (' + l.map(function (a) { return esc(a.note || 'away') + ' ' + dur(a.ms); }).join(', ') + ')';
+  }
+  function esc(x) { return String(x).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
   function tick() {
     var now = Date.now();
